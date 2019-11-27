@@ -1,6 +1,7 @@
 use std::io::{IoSlice, IoSliceMut, Read as _, Write as _};
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::time::Duration;
 
 use crate::future;
 use crate::io::{self, Read, Write};
@@ -54,10 +55,8 @@ impl TcpStream {
     /// Creates a new TCP stream connected to the specified address.
     ///
     /// This method will create a new TCP socket and attempt to connect it to the `addr`
-    /// provided. The [returned future] will be resolved once the stream has successfully
+    /// provided. The returned future will be resolved once the stream has successfully
     /// connected, or it will return an error if one occurs.
-    ///
-    /// [returned future]: struct.Connect.html
     ///
     /// # Examples
     ///
@@ -100,6 +99,43 @@ impl TcpStream {
                 "could not resolve to any addresses",
             )
         }))
+    }
+
+    /// Opens a TCP connection to a remote host with a timeout.
+    ///
+    /// Unlike `connect`, `connect_timeout` takes a single [`SocketAddr`] since
+    /// timeout must be applied to individual addresses.
+    ///
+    /// It is an error to pass a zero `Duration` to this function.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn main() -> std::io::Result<()> { async_std::task::block_on(async {
+    /// #
+    /// use async_std::net::TcpStream;
+    /// use std::time::Duration;
+    ///
+    /// let timeout = Duration::from_secs(5);
+    /// let stream = TcpStream::connect_timeout("127.0.0.1:0", timeout).await?;
+    /// #
+    /// # Ok(()) }) }
+    /// ```
+    ///
+    /// [`SocketAddr`]: ./enum.SocketAddr.html
+    pub async fn connect_timeout(addr: &SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
+        let addr = *addr;
+
+        spawn_blocking(move || {
+            let std_stream = std::net::TcpStream::connect_timeout(&addr, timeout)
+                .context(|| format!("could not connect to {}", addr))?;
+            let mio_stream = mio::net::TcpStream::from_stream(std_stream)
+                .context(|| format!("could not open async connection to {}", addr))?;
+            Ok(TcpStream {
+                watcher: Watcher::new(mio_stream),
+            })
+        })
+        .await
     }
 
     /// Returns the local address that this stream is connected to.
